@@ -1,0 +1,65 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\title{USU Image Generation}
+\author{Imran Kutianawala}
+\date{April 8, 2026}
+
+\begin{document}
+\maketitle
+
+\section{USU Image Generation}
+\label{sec:usu-generation}
+
+\subsection{Motivation}
+
+When computing the refusal vector using USU (Unsafe-Safe-Unsafe) samples, we observe an extremely low refusal rate. In particular, when passing an unsafe image \textit{without} any accompanying text input, the refusal rate drops further still: only 10 out of 950 samples were refused. This low rate introduces noise into the refusal vector calculation and makes it difficult to assess the validity and true scope of our results.
+
+A natural solution is to construct our own unsafe image samples. Concretely, we can create images that combine several features. Throughout this section, ``unsafe text'' refers to unsafe text \textit{embedded within} the image itself, not text passed as a separate input. The combinations we consider are:
+
+\begin{enumerate}
+    \item Unsafe text on a blank or neutral (white/noise) background.
+    \item Unsafe text on a harmful image background that is \textit{related} to the text.
+    \item Unsafe text on a harmful image background that is \textit{unrelated} to the text.
+\end{enumerate}
+
+\subsection{Generation Options}
+
+Each of the two components (unsafe text and harmful images) can be sourced in different ways.
+
+\paragraph{Unsafe text.} We can either retrieve unsafe text from an existing dataset or generate it ourselves.
+\begin{itemize}
+    \item If the text must be semantically related to the background image, we need to generate the text conditioned on the image content.
+    \item If the text does not need to be related to the image, we can simply draw from an existing dataset of unsafe prompts.
+\end{itemize}
+
+\paragraph{Harmful images.} Similarly, harmful images can be generated or sourced from existing datasets.
+\begin{itemize}
+    \item If the background is intended to be neutral (white space or random pixels), it is inexpensive to produce using simple NumPy operations.
+    \item If the background is intended to be harmful or unsafe, we can either generate it (which is more expensive) or retrieve it from an existing dataset.
+\end{itemize}
+
+\subsection{Proposed Approaches}
+
+We outline three concrete approaches for constructing the USU image samples:
+
+\begin{enumerate}
+    \item \textbf{Paired harmful dataset.} Find a dataset containing harmful images paired with (non-embedded) harmful text. Take the harmful text and embed it directly into the corresponding image. The resulting image contains both a harmful visual background and embedded harmful text.
+
+    \item \textbf{Image-conditioned text generation.} Find a dataset of harmful images. For each image, generate a harmful text prompt conditioned on the image content, then embed that text into the image itself.
+
+    \item \textbf{Text-only isolation.} Find a dataset of harmful text. Embed each text sample into an image with either no background or a white/noise background.
+    \begin{itemize}
+        \item This approach is particularly useful because it isolates the effect of the modality shift alone. The content is purely textual; the only difference is that the text is rendered as an image rather than passed as a string. This provides a well-controlled setting for measuring how the transition from text to image format affects the refusal vector.
+        \item As a follow-up, we can compare (1) using the pure text for refusal vector calculation against (2) using the image-rendered text for refusal vector calculation. This paired comparison offers a tightly controlled experimental design.
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Considerations}
+
+The primary concern is ensuring that our generation choices remain consistent with the other methodological decisions made throughout this project, and that we adequately control for sources of noise. Each approach above offers different trade-offs between cost, control, and ecological validity, and the choice among them should be guided by what we aim to isolate in a given experiment.
+
+\end{document}
