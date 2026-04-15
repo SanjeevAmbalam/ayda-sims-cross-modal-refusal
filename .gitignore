@@ -8,3 +8,9 @@
 __pycache__/
 *.pyc
 results/
+
+
+.venv/
+__pycache__/
+*.pyc
+results/

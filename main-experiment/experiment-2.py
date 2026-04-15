@@ -631,6 +631,100 @@ def step3_unsafe_text_safe_image(model, processor):
 
     return results
 
+# computing text specific refusal vectors by comparing refused SUU activations to SSS text-only activations, then normalizing the difference to get a direction vector for text-based refusal. This will be used in step 5 to ablate the text refusal component and see how it affects SUU refusals.
+def step_text_refusal_vector(model, processor):
+    print("\n========== STEP 8: Text Refusal Vector ==========")
+
+    # Reuse SUU text-only activations from step 3
+    step3 = torch.load(os.path.join(OUTPUT_DIR, "step3_suu_results.pt"))
+    refused_indices = step3["refused_indices"]
+    del step3
+    gc.collect()
+
+    if len(refused_indices) == 0:
+        raise RuntimeError(
+            "Text vector step: zero refused SUU samples from step 3."
+        )
+
+    # Part 1: mean unsafe-text activations from refused SUU samples
+    suu_text_sums = {}
+    for idx in refused_indices:
+        act_dict = torch.load(
+            os.path.join(OUTPUT_DIR, "step3_activations", f"sample_{idx}.pt")
+        )
+        for l in range(LAYERS_START, LAYERS_END + 1):
+            act = act_dict[l].squeeze(0).float()
+            if l not in suu_text_sums:
+                suu_text_sums[l] = act.clone()
+            else:
+                suu_text_sums[l] += act
+        del act_dict
+
+    suu_text_means = {
+        l: suu_text_sums[l] / len(refused_indices) for l in suu_text_sums
+    }
+    del suu_text_sums
+    gc.collect()
+
+    # Part 2: mean safe-text activations from SSS text-only
+    samples = load_holisafe("SSS", n=N_SAMPLES)
+
+    sss_text_sums = {}
+    sss_count = 0
+
+    for i, sample in enumerate(samples):
+        print(f"  SSS text-only inference {i+1}/{len(samples)}: {sample['query'][:60]}...")
+
+        activations, _, _ = run_inference(
+            model,
+            processor,
+            query=sample["query"],   # text-only safe baseline
+            collect_logits=False,
+        )
+
+        for l in range(LAYERS_START, LAYERS_END + 1):
+            act = activations[l].squeeze(0).float()
+            if l not in sss_text_sums:
+                sss_text_sums[l] = act.clone()
+            else:
+                sss_text_sums[l] += act
+
+        # optional save
+        torch.save(
+            activations,
+            os.path.join(OUTPUT_DIR, "text_sss_activations", f"sample_{i}.pt"),
+        )
+
+        sss_count += 1
+        del activations
+        torch.cuda.empty_cache()
+
+    del samples
+    gc.collect()
+
+    sss_text_means = {l: sss_text_sums[l] / sss_count for l in sss_text_sums}
+    del sss_text_sums
+
+    # Part 3: compute normalized text refusal vectors
+    text_refusal_vectors = {}
+    for layer_idx in range(LAYERS_START, LAYERS_END + 1):
+        diff = suu_text_means[layer_idx] - sss_text_means[layer_idx]
+        text_refusal_vectors[layer_idx] = (diff / diff.norm()).half()
+        print(
+            f"    Layer {layer_idx}: text refusal direction norm = "
+            f"{text_refusal_vectors[layer_idx].norm().item():.4f}"
+        )
+
+    del suu_text_means, sss_text_means
+    gc.collect()
+
+    torch.save(
+        text_refusal_vectors,
+        os.path.join(OUTPUT_DIR, "step8_text_refusal_vectors.pt"),
+    )
+    print("  Saved text refusal vectors to step8_text_refusal_vectors.pt")
+
+    return text_refusal_vectors
 
 def step4_similarity_plot():
     print("\n========== STEP 4: Layer-wise Similarity Plot ==========")
@@ -716,6 +810,101 @@ def step5_ablated_inference(model, processor):
     print("  Saved to step5_ablated_suu_results.pt")
 
     return results
+
+# does the ablation with the text refusal vector 
+def run_suu_ablation_with_vector(vector_path, save_name):
+    print(f"\n========== SUU ABLATION WITH {save_name} ==========")
+
+    refusal_vectors = torch.load(vector_path)
+    step3 = torch.load(os.path.join(OUTPUT_DIR, "step3_suu_results.pt"))
+    baseline_refusal_rate = step3["refusal_rate"]
+    step3_queries = step3.get("all_queries", None)
+    del step3
+    gc.collect()
+
+    model, processor = load_model_and_processor()
+    samples = load_holisafe("SUU", n=N_SAMPLES)
+
+    if step3_queries is not None:
+        current_queries = [s["query"] for s in samples]
+        if current_queries != step3_queries:
+            raise RuntimeError(
+                "SUU sample order doesn't match step 3. Re-run from step 3."
+            )
+
+    all_responses = []
+    judgments = []
+
+    for i, sample in enumerate(samples):
+        print(f"  Ablated inference {i+1}/{len(samples)}: {sample['query'][:60]}...")
+
+        _, response = run_inference_ablated(
+            model,
+            processor,
+            query=sample["query"],
+            refusal_vectors=refusal_vectors,
+            collect_logits=False,
+        )
+
+        is_refusal = judge_response(response, i)
+        all_responses.append(response)
+        judgments.append(is_refusal)
+        torch.cuda.empty_cache()
+
+    del samples
+    gc.collect()
+
+    ablated_refusal_rate = sum(judgments) / len(judgments)
+
+    print(f"  Baseline refusal rate: {baseline_refusal_rate:.2%}")
+    print(f"  Ablated refusal rate:  {ablated_refusal_rate:.2%}")
+    print(f"  Drop:                  {baseline_refusal_rate - ablated_refusal_rate:.2%}")
+
+    results = {
+        "responses": all_responses,
+        "judgments": judgments,
+        "ablated_refusal_rate": ablated_refusal_rate,
+        "baseline_refusal_rate": baseline_refusal_rate,
+        "drop": baseline_refusal_rate - ablated_refusal_rate,
+        "vector_path": vector_path,
+    }
+    torch.save(results, os.path.join(OUTPUT_DIR, save_name))
+    print(f"  Saved to {save_name}")
+
+    return results
+
+def step_compare_image_vs_text_ablation():
+    print("\n========== STEP 10: Compare Image vs Text Vector Ablation ==========")
+
+    baseline = torch.load(os.path.join(OUTPUT_DIR, "step3_suu_results.pt"))
+    image_ablation = torch.load(os.path.join(OUTPUT_DIR, "step5_ablated_suu_results.pt"))
+    text_ablation = torch.load(os.path.join(OUTPUT_DIR, "step9_textvec_ablated_suu_results.pt"))
+
+    baseline_rate = baseline["refusal_rate"]
+    image_rate = image_ablation["ablated_refusal_rate"]
+    text_rate = text_ablation["ablated_refusal_rate"]
+
+    comparison = {
+        "baseline_refusal_rate": baseline_rate,
+        "image_vector_ablated_refusal_rate": image_rate,
+        "text_vector_ablated_refusal_rate": text_rate,
+        "image_vector_drop": baseline_rate - image_rate,
+        "text_vector_drop": baseline_rate - text_rate,
+        "text_minus_image_drop": (baseline_rate - text_rate) - (baseline_rate - image_rate),
+    }
+
+    print(f"  Baseline SUU refusal rate:       {baseline_rate:.2%}")
+    print(f"  Image-vector ablated rate:       {image_rate:.2%}")
+    print(f"  Text-vector ablated rate:        {text_rate:.2%}")
+    print(f"  Image-vector refusal drop:       {baseline_rate - image_rate:.2%}")
+    print(f"  Text-vector refusal drop:        {baseline_rate - text_rate:.2%}")
+    print(f"  Extra drop from text vs image:   {comparison['text_minus_image_drop']:.2%}")
+
+    with open(os.path.join(OUTPUT_DIR, "step10_image_vs_text_comparison.json"), "w") as f:
+        json.dump(comparison, f, indent=2)
+
+    return comparison
+
 
 
 def step6_kl_divergence():
@@ -949,5 +1138,33 @@ if __name__ == "__main__":
         save_checkpoint(completed)
     else:
         print("Step 7 already complete, skipping.")
+
+    if 8 not in completed:
+        step_text_refusal_vector(model, processor)
+        completed.append(8)
+        save_checkpoint(completed)
+        gc.collect()
+        torch.cuda.empty_cache()
+    else:
+        print("Step 8 already complete, skipping.")
+
+    if 9 not in completed:
+        run_suu_ablation_with_vector(
+            vector_path=os.path.join(OUTPUT_DIR, "step8_text_refusal_vectors.pt"),
+            save_name="step9_textvec_ablated_suu_results.pt",
+        )
+        completed.append(9)
+        save_checkpoint(completed)
+        gc.collect()
+        torch.cuda.empty_cache()
+    else:
+        print("Step 9 already complete, skipping.")
+
+    if 10 not in completed:
+        step_compare_image_vs_text_ablation()
+        completed.append(10)
+        save_checkpoint(completed)
+    else:
+        print("Step 10 already complete, skipping.")
 
     print("\n========== ALL STEPS COMPLETE ==========")
