@@ -37,6 +37,7 @@ os.makedirs(os.path.join(OUTPUT_DIR, "step2_sss_logits"), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "step2_ablated_logits"), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "step3_activations"), exist_ok=True)
 
+os.makedirs(os.path.join(OUTPUT_DIR, "text_sss_activations"), exist_ok=True)
 
 def load_checkpoint():
     if os.path.exists(CHECKPOINT_FILE):
