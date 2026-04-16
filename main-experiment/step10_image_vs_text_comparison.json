@@ -1,0 +1,8 @@
+{
+  "baseline_refusal_rate": 0.6933333333333334,
+  "image_vector_ablated_refusal_rate": 0.5533333333333333,
+  "text_vector_ablated_refusal_rate": 0.6133333333333333,
+  "image_vector_drop": 0.14,
+  "text_vector_drop": 0.08000000000000007,
+  "text_minus_image_drop": -0.05999999999999994
+}
