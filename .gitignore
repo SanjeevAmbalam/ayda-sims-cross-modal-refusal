@@ -7,8 +7,12 @@
 *.out
 __pycache__/
 *.pyc
-results/
 
+results/*
+!results/step10_image_vs_text_comparison.json
+!results/step7_summary_statistics.json
+!results/step4_similarity_plot.png
+!results/step6_kl_divergence.png
 
 .venv/
 __pycache__/
